@@ -235,8 +235,8 @@ def module_strict_intersection():
     input("\n按回车键返回...")
 
 def module_fuzzy_intersection():
-    print("\n>>> 功能: 智能模糊交集 (上下对照版)")
-    print("说明: 清洗歌名后，将匹配成功的歌曲聚类展示，方便上下对比。")
+    print("\n>>> 功能: 模糊交集")
+    print("说明: 清洗歌名后找出相似歌曲。完全相同的歌合并显示，不同版本分行对比。")
     
     data = select_files(min_count=2, max_count=2)
     if not data: return input("按回车返回...")
@@ -249,7 +249,6 @@ def module_fuzzy_intersection():
     df2['clean_title'] = df2['title'].apply(normalize_title)
     
     # 2. 找出交集 (只获取两个歌单都有的 clean_title 列表)
-    # intersection 是一个集合，比如 {'hello', '晴天'}
     common_clean_titles = set(df1['clean_title']).intersection(set(df2['clean_title']))
     
     if not common_clean_titles:
@@ -257,40 +256,85 @@ def module_fuzzy_intersection():
         input("\n按回车键返回...")
         return
 
-    # 3. 筛选数据 (只保留在交集里的歌)
-    #isin() 函数判断是否在交集列表中
+    # 3. 筛选数据
     result_df1 = df1[df1['clean_title'].isin(common_clean_titles)].copy()
     result_df2 = df2[df2['clean_title'].isin(common_clean_titles)].copy()
     
-    # 4. 标记来源 (这样你才知道这行是 A 的还是 B 的)
-    # 去掉文件名里的 .csv 后缀，让来源名字好看点
+    # 4. 去掉文件名的前缀后缀
     source_name1 = name1.replace("playlist_", "").replace(".csv", "")
     source_name2 = name2.replace("playlist_", "").replace(".csv", "")
     
-    result_df1['source'] = f"[A] {source_name1}"
-    result_df2['source'] = f"[B] {source_name2}"
+    # 5. 【新逻辑】智能合并：ID相同的合并，ID不同的分行显示
+    final_rows = []
     
-    # 5. 上下合并 (Concat)
-    final_df = pd.concat([result_df1, result_df2])
+    for clean_t in sorted(common_clean_titles):
+        # 获取该歌名在两个歌单中的所有记录
+        songs_a = result_df1[result_df1['clean_title'] == clean_t]
+        songs_b = result_df2[result_df2['clean_title'] == clean_t]
+        
+        # 找出完全相同的歌（ID匹配）
+        ids_a = set(songs_a['id'])
+        ids_b = set(songs_b['id'])
+        common_ids = ids_a & ids_b  # 交集
+        
+        # 先处理完全相同的歌（合并显示）
+        for song_id in common_ids:
+            song_info = songs_a[songs_a['id'] == song_id].iloc[0]
+            final_rows.append({
+                'clean_title': clean_t,
+                'source': '均有',
+                'title': song_info['title'],
+                'artist': song_info['artist'],
+                'album': song_info['album'],
+                'duration': song_info['duration'],
+                'id': song_id
+            })
+        
+        # 再处理只在A中的（ID不在交集中的）
+        for _, song in songs_a[~songs_a['id'].isin(common_ids)].iterrows():
+            final_rows.append({
+                'clean_title': clean_t,
+                'source': f'[A] {source_name1}',
+                'title': song['title'],
+                'artist': song['artist'],
+                'album': song['album'],
+                'duration': song['duration'],
+                'id': song['id']
+            })
+        
+        # 最后处理只在B中的
+        for _, song in songs_b[~songs_b['id'].isin(common_ids)].iterrows():
+            final_rows.append({
+                'clean_title': clean_t,
+                'source': f'[B] {source_name2}',
+                'title': song['title'],
+                'artist': song['artist'],
+                'album': song['album'],
+                'duration': song['duration'],
+                'id': song['id']
+            })
     
-    # 6. 【关键一步】排序
-    # 先按 'clean_title' 排序，这样同名的歌就会聚在一起
-    # 再按 'source' 排序，保证 A 歌单总是在 B 歌单上面
-    final_df = final_df.sort_values(by=['clean_title', 'source'])
+    # 6. 转为DataFrame
+    final_df = pd.DataFrame(final_rows)
     
-    # 7. 整理列顺序 (把 'clean_title' 放在第一列作为索引)
-    cols = ['clean_title', 'source', 'title', 'artist', 'album', 'duration']
+    # 7. 整理列顺序
+    cols = ['clean_title', 'source', 'title', 'artist', 'album', 'duration', 'id']
     final_df = final_df[cols]
     
-    # 8. 保存
-    count = len(common_clean_titles)
-    print(f"\n[结果] 发现 {count} 组相似歌曲。")
+    # 8. 统计并保存
+    count_total = len(final_df)
+    count_common = len([r for r in final_rows if r['source'] == '均有'])
+    count_diff = count_total - count_common
     
-    out_name = f"交集_对照视图_{source_name1}_x_{source_name2}.csv"
+    print(f"\n[结果] 发现 {len(common_clean_titles)} 组相似歌曲：")
+    print(f"        - 完全相同（已合并）: {count_common} 首")
+    print(f"        - 不同版本（分行显示）: {count_diff} 行")
+    
+    out_name = f"交集_模糊匹配_{source_name1}_x_{source_name2}.csv"
     final_df.to_csv(out_name, index=False, encoding='utf_8_sig')
     
     print(f"已保存文件: {out_name}")
-    print("提示: 打开 Excel 后，第一列相同的行即为同一组匹配。")
+    print("提示: source='均有' 表示完全相同的歌，[A]/[B] 表示不同版本。")
         
     input("\n按回车键返回...")
     
