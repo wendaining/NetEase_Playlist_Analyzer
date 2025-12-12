@@ -28,8 +28,8 @@
 
 1.  克隆仓库或下载源码：
     ```bash
-    git clone [https://github.com/你的用户名/你的仓库名.git](https://github.com/你的用户名/你的仓库名.git)
-    cd 你的仓库名
+    git clone https://github.com/wendaining/NetEase_Playlist_Analyzer.git
+    cd NetEase_Playlist_Analyzer
     ```
 
 2.  直接运行：
