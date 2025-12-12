@@ -103,11 +103,11 @@ def get_csv_files():
     """获取当前目录下所有的 playlist_*.csv"""
     return glob.glob("playlist_*.csv")
 
-def select_files(count=1):
-    """交互式文件选择器"""
+def select_files(min_count=1, max_count=None, msg=""):
+    """交互式文件选择器，支持选择任意数量文件"""
     files = get_csv_files()
-    if len(files) < count:
-        print(f"\n[!] 错误: 当前目录下 'playlist_*.csv' 文件不足 {count} 个。")
+    if len(files) < min_count:
+        print(f"\n[!] 错误: 当前目录下 'playlist_*.csv' 文件不足 {min_count} 个。")
         print("    -> 请先使用功能 [1] 下载歌单。")
         return None
 
@@ -117,18 +117,32 @@ def select_files(count=1):
     print("-" * 30)
 
     try:
-        if count == 1:
+        if min_count == 1 and max_count == 1:
             idx = int(input(f"请输入 1 个文件的序号: "))
             f = files[idx]
-            # 读取时强制 id 为 str
-            return (f, pd.read_csv(f, dtype={'id': str}))
-        
-        elif count == 2:
-            sel = input(f"请输入 2 个文件的序号 (用空格分隔，如 0 1): ").split()
-            idx1, idx2 = int(sel[0]), int(sel[1])
-            f1, f2 = files[idx1], files[idx2]
-            return (f1, pd.read_csv(f1, dtype={'id': str}), 
-                    f2, pd.read_csv(f2, dtype={'id': str}))
+            return [(f, pd.read_csv(f, dtype={'id': str}))]
+        else:
+            if max_count:
+                prompt = f"请输入 {min_count}-{max_count} 个文件的序号 (用空格分隔)"
+            else:
+                prompt = f"请输入至少 {min_count} 个文件的序号 (用空格分隔)"
+            if msg:
+                prompt = msg
+            
+            sel = input(f"{prompt}: ").split()
+            if len(sel) < min_count:
+                print(f"[!] 至少需要选择 {min_count} 个文件。")
+                return None
+            if max_count and len(sel) > max_count:
+                print(f"[!] 最多只能选择 {max_count} 个文件。")
+                return None
+            
+            result = []
+            for idx_str in sel:
+                idx = int(idx_str)
+                f = files[idx]
+                result.append((f, pd.read_csv(f, dtype={'id': str})))
+            return result
     except (ValueError, IndexError):
         print("[!] 输入无效，请重试。")
         return None
@@ -218,29 +232,31 @@ def module_crawler():
 
 def module_strict_intersection():
     print("\n>>> 功能: 严格交集 (ID 完全一致)")
-    print("说明: 找出两个歌单中，完全是同一首歌（文件ID相同）的曲目。")
+    print("说明: 找出多个歌单中，完全是同一首歌（文件ID相同）的曲目。")
     
-    data = select_files(count=2)
+    data = select_files(min_count=2, msg="请输入至少2个文件的序号 (用空格分隔)")
     if not data: return input("按回车返回...")
     
-    name1, df1, name2, df2 = data
+    # 从第一个歌单开始，逐个取交集
+    result_df = data[0][1]
+    names = [data[0][0]]
     
-    # Merge
-    merged = pd.merge(df1, df2, on='id', how='inner', suffixes=('_A', '_B'))
+    for i in range(1, len(data)):
+        names.append(data[i][0])
+        result_df = pd.merge(result_df, data[i][1], on='id', how='inner', suffixes=('', f'_{i}'))
     
-    print(f"\n[结果] 共有 {len(merged)} 首完全相同的歌。")
+    print(f"\n[结果] 共有 {len(result_df)} 首完全相同的歌。")
     
-    if not merged.empty:
-        # 整理输出列
-        out_cols = ['id', 'title_A', 'artist_A', 'album_A']
-        out_df = merged[out_cols].rename(columns={
-            'title_A': 'title', 'artist_A': 'artist', 'album_A': 'album'
-        })
+    if not result_df.empty:
+        # 只保留基本信息列（来自第一个歌单）
+        base_cols = ['id', 'title', 'artist', 'album', 'duration']
+        # 找出实际存在的列
+        out_cols = [col for col in base_cols if col in result_df.columns]
+        out_df = result_df[out_cols]
         
         # 生成文件名
-        n1_clean = name1.replace("playlist_", "").replace(".csv", "")
-        n2_clean = name2.replace("playlist_", "").replace(".csv", "")
-        out_name = f"交集_严格_{n1_clean}_x_{n2_clean}.csv"
+        name_parts = [n.replace("playlist_", "").replace(".csv", "") for n in names]
+        out_name = f"交集_严格_{'_x_'.join(name_parts)}.csv"
         
         out_df.to_csv(out_name, index=False, encoding='utf_8_sig')
         print(f"已保存文件: {out_name}")
@@ -248,48 +264,155 @@ def module_strict_intersection():
     input("\n按回车键返回...")
 
 def module_fuzzy_intersection():
-    print("\n>>> 功能: 智能模糊交集 (忽略版本/Live后缀)")
+    print("\n>>> 功能: 模糊交集 (忽略版本/Live后缀)")
     print("说明: 清洗歌名（去括号、去后缀、忽略大小写）后进行匹配。")
     
-    data = select_files(count=2)
+    data = select_files(min_count=2, msg="请输入至少2个文件的序号 (用空格分隔)")
     if not data: return input("按回车返回...")
     
-    name1, df1, name2, df2 = data
+    # 1. 应用清洗逻辑到所有歌单
+    for i in range(len(data)):
+        data[i][1]['clean_title'] = data[i][1]['title'].apply(normalize_title)
     
-    # 1. 应用清洗逻辑
-    df1['clean_title'] = df1['title'].apply(normalize_title)
-    df2['clean_title'] = df2['title'].apply(normalize_title)
+    # 2. 从第一个歌单开始，逐个取交集
+    result_df = data[0][1]
+    names = [data[0][0]]
     
-    # 2. 匹配 (使用 清洗后的歌名 进行连接)
-    # 这里我们只 merge clean_title，不 merge artist，
-    # 但会在结果里列出两边的 artist 供人工排查 "同名不同人" 的情况
-    merged = pd.merge(df1, df2, on='clean_title', how='inner', suffixes=('_A', '_B'))
+    for i in range(1, len(data)):
+        names.append(data[i][0])
+        result_df = pd.merge(result_df, data[i][1], on='clean_title', how='inner', suffixes=('', f'_{i}'))
     
-    print(f"\n[结果] 共有 {len(merged)} 首相似歌曲。")
+    print(f"\n[结果] 共有 {len(result_df)} 首相似歌曲。")
     
-    if not merged.empty:
-        # 整理输出列：保留双方原始标题和歌手，方便核对
-        cols = ['clean_title', 'title_A', 'title_B', 'artist_A', 'artist_B', 'album_A', 'album_B']
-        out_df = merged[cols]
+    if not result_df.empty:
+        # 整理输出列：保留各歌单的原始标题和歌手供核对
+        out_cols = ['clean_title']
+        for i in range(len(data)):
+            if i == 0:
+                out_cols.extend(['title', 'artist', 'album'])
+            else:
+                out_cols.extend([f'title_{i}', f'artist_{i}', f'album_{i}'])
         
-        n1_clean = name1.replace("playlist_", "").replace(".csv", "")
-        n2_clean = name2.replace("playlist_", "").replace(".csv", "")
-        out_name = f"交集_模糊_{n1_clean}_x_{n2_clean}.csv"
+        # 只保留存在的列
+        out_cols = [col for col in out_cols if col in result_df.columns]
+        out_df = result_df[out_cols]
+        
+        name_parts = [n.replace("playlist_", "").replace(".csv", "") for n in names]
+        out_name = f"交集_模糊_{'_x_'.join(name_parts)}.csv"
         
         out_df.to_csv(out_name, index=False, encoding='utf_8_sig')
         print(f"已保存文件: {out_name}")
-        print("提示: 请打开 CSV 核对 'artist_A' 和 'artist_B' 列以排除同名不同曲。")
+        print("提示: 请打开 CSV 核对各歌单的 artist 列以排除同名不同曲。")
         
+    input("\n按回车键返回...")
+
+def module_difference():
+    print("\n>>> 功能: 差集/补集 (A中有但B中没有)")
+    print("说明: 找出第一个歌单中有，但其他歌单中都没有的歌曲。")
+    print("      支持严格模式(ID匹配)和模糊模式(歌名匹配)。")
+    
+    mode = input("\n请选择模式 [1]严格ID匹配 [2]模糊歌名匹配: ").strip()
+    if mode not in ['1', '2']:
+        print("[!] 无效选项")
+        return input("按回车返回...")
+    
+    data = select_files(min_count=2, max_count=2, msg="请输入2个文件的序号 (用空格分隔): A B")
+    if not data: return input("按回车返回...")
+    
+    name_a, df_a = data[0]
+    name_b, df_b = data[1]
+    
+    if mode == '1':
+        # 严格ID匹配
+        # 找出在A中但不在B中的ID
+        diff_df = df_a[~df_a['id'].isin(df_b['id'])]
+        mode_str = "严格"
+    else:
+        # 模糊歌名匹配
+        df_a['clean_title'] = df_a['title'].apply(normalize_title)
+        df_b['clean_title'] = df_b['title'].apply(normalize_title)
+        diff_df = df_a[~df_a['clean_title'].isin(df_b['clean_title'])]
+        mode_str = "模糊"
+    
+    print(f"\n[结果] A中有但B中没有的歌曲: {len(diff_df)} 首")
+    
+    if not diff_df.empty:
+        # 保留基本信息
+        base_cols = ['id', 'title', 'artist', 'album', 'duration']
+        out_cols = [col for col in base_cols if col in diff_df.columns]
+        out_df = diff_df[out_cols]
+        
+        na_clean = name_a.replace("playlist_", "").replace(".csv", "")
+        nb_clean = name_b.replace("playlist_", "").replace(".csv", "")
+        out_name = f"差集_{mode_str}_{na_clean}_减_{nb_clean}.csv"
+        
+        out_df.to_csv(out_name, index=False, encoding='utf_8_sig')
+        print(f"已保存文件: {out_name}")
+    
+    input("\n按回车键返回...")
+
+def module_union():
+    print("\n>>> 功能: 并集 (合并多个歌单并去重)")
+    print("说明: 将多个歌单合并，去除重复歌曲。")
+    print("      支持严格模式(ID去重)和模糊模式(歌名去重)。")
+    
+    mode = input("\n请选择模式 [1]严格ID去重 [2]模糊歌名去重: ").strip()
+    if mode not in ['1', '2']:
+        print("[!] 无效选项")
+        return input("按回车返回...")
+    
+    data = select_files(min_count=2, msg="请输入至少2个文件的序号 (用空格分隔)")
+    if not data: return input("按回车返回...")
+    
+    # 合并所有歌单
+    all_dfs = []
+    names = []
+    for name, df in data:
+        names.append(name)
+        if mode == '2':  # 模糊模式需要添加清洗后的标题
+            df['clean_title'] = df['title'].apply(normalize_title)
+        all_dfs.append(df)
+    
+    # 合并所有数据
+    union_df = pd.concat(all_dfs, ignore_index=True)
+    
+    original_count = len(union_df)
+    
+    if mode == '1':
+        # 严格ID去重
+        union_df = union_df.drop_duplicates(subset=['id'], keep='first')
+        mode_str = "严格"
+    else:
+        # 模糊歌名去重
+        union_df = union_df.drop_duplicates(subset=['clean_title'], keep='first')
+        mode_str = "模糊"
+    
+    print(f"\n[结果] 合并前总计: {original_count} 首")
+    print(f"        去重后保留: {len(union_df)} 首")
+    print(f"        移除重复: {original_count - len(union_df)} 首")
+    
+    if not union_df.empty:
+        # 保留基本信息
+        base_cols = ['id', 'title', 'artist', 'album', 'duration']
+        out_cols = [col for col in base_cols if col in union_df.columns]
+        out_df = union_df[out_cols]
+        
+        name_parts = [n.replace("playlist_", "").replace(".csv", "") for n in names]
+        out_name = f"并集_{mode_str}_{'_合_'.join(name_parts)}.csv"
+        
+        out_df.to_csv(out_name, index=False, encoding='utf_8_sig')
+        print(f"已保存文件: {out_name}")
+    
     input("\n按回车键返回...")
 
 def module_internal_check():
     print("\n>>> 功能: 单歌单查重")
     print("说明: 在一个歌单内查找歌名（清洗后）重复的歌曲。")
     
-    data = select_files(count=1)
+    data = select_files(min_count=1, max_count=1)
     if not data: return input("按回车返回...")
     
-    name, df = data
+    name, df = data[0]
     
     # 清洗
     df['clean_title'] = df['title'].apply(normalize_title)
@@ -316,15 +439,17 @@ def module_internal_check():
 def main():
     while True:
         clear_screen()
-        print("=" * 40)
+        print("=" * 50)
         print("   网易云歌单集成工具")
-        print("=" * 40)
-        print(" [1] 下载歌单 (支持 >1000 首)")
-        print(" [2] 两个歌单取交集 (严格 ID 匹配)")
-        print(" [3] 两个歌单取交集 (智能 歌名匹配)")
-        print(" [4] 单个歌单内部查重")
+        print("=" * 50)
+        print(" [1] 下载歌单（支持 >1000 首）")
+        print(" [2] 多歌单取交集（严格匹配）")
+        print(" [3] 多歌单取交集（模糊歌名匹配）")
+        print(" [4] 两歌单取差集（A有B没有）")
+        print(" [5] 多歌单取并集（合并去重）")
+        print(" [6] 单个歌单内部查重（模糊歌名匹配）")
         print(" [0] 退出")
-        print("-" * 40)
+        print("-" * 50)
         
         choice = input("请输入选项: ").strip()
         
@@ -335,6 +460,10 @@ def main():
         elif choice == '3':
             module_fuzzy_intersection()
         elif choice == '4':
+            module_difference()
+        elif choice == '5':
+            module_union()
+        elif choice == '6':
             module_internal_check()
         elif choice == '0':
             print("Bye~")
