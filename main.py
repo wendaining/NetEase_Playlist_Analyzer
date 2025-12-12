@@ -1,63 +1,34 @@
 import sys
-import subprocess
 import os
 
-def check_and_install_dependencies():
-    """
-    自动检测并安装缺少的库
-    """
-    # 这里列出你所有的第三方库
-    required_packages = {
-        'pandas': 'pandas', 
-        'pyncm': 'pyncm'
-        # 如果以后用了 openpyxl 或 requests 也可以加在这里
-        # 格式为 '导入名': 'pip安装名'
-    }
+# --- 标准的依赖检查 (Graceful Check) ---
+try:
+    # 尝试导入核心第三方库
+    import pandas as pd
+    import pyncm
+    import pyncm.apis # 确保子模块也能被加载
     
-    missing = []
-    
-    # 1. 检查哪些包缺失
-    for import_name, install_name in required_packages.items():
-        try:
-            __import__(import_name)
-        except ImportError:
-            missing.append(install_name)
-    
-    # 2. 如果有缺失，执行安装
-    if missing:
-        print("="*50)
-        print(f"检测到缺少必要运行库: {', '.join(missing)}")
-        print("正在尝试自动安装，请稍候...")
-        print("="*50)
-        
-        try:
-            # 使用当前运行的 python 环境对应的 pip 进行安装
-            # -i https://pypi.tuna.tsinghua.edu.cn/simple 是使用清华镜像源，下载更快
-            subprocess.check_call([
-                sys.executable, '-m', 'pip', 'install', *missing, 
-                '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'
-            ])
-            print("\n[√] 依赖安装成功！正在启动程序...\n")
-            
-            # 3. 安装完成后重启脚本，确保库能被正确加载
-            # 这一步是为了防止 Python 缓存了“没有这个包”的状态
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-            
-        except subprocess.CalledProcessError:
-            print("[!] 自动安装失败。")
-            print(f"请手动打开终端运行: pip install {' '.join(missing)}")
-            input("按回车键退出...")
-            sys.exit(1)
+except ImportError as e:
+    # 如果缺少库，捕获错误并输出友好的提示信息
+    print("=" * 60)
+    print(f"❌ 启动失败：缺少必要的运行库。")
+    print(f"错误详情: {e}")
+    print("-" * 60)
+    print("请按照以下步骤安装依赖：")
+    print("\n1. 确保当前目录有 'requirements.txt' 文件")
+    print("2. 在终端/命令行运行以下命令：")
+    print("\n   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple")
+    print("=" * 60)
+    # 非正常退出，返回状态码 1
+    input("按回车键退出...")
+    sys.exit(1)
 
-# --- 在程序最开始执行检查 ---
-check_and_install_dependencies()
-
+# ==========================================
+#  下面是你的核心逻辑代码
+# ==========================================
 import re
 import time
 import glob
-import pandas as pd
-import pyncm
-import pyncm.apis
 
 # ==========================================
 #  工具函数 / 配置
