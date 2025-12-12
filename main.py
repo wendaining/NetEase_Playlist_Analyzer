@@ -235,48 +235,65 @@ def module_strict_intersection():
     input("\n按回车键返回...")
 
 def module_fuzzy_intersection():
-    print("\n>>> 功能: 模糊交集 (忽略版本/Live后缀)")
-    print("说明: 清洗歌名（去括号、去后缀、忽略大小写）后进行匹配。")
+    print("\n>>> 功能: 智能模糊交集 (上下对照版)")
+    print("说明: 清洗歌名后，将匹配成功的歌曲聚类展示，方便上下对比。")
     
-    data = select_files(min_count=2, msg="请输入至少2个文件的序号 (用空格分隔)")
+    data = select_files(min_count=2, max_count=2)
     if not data: return input("按回车返回...")
     
-    # 1. 应用清洗逻辑到所有歌单
-    for i in range(len(data)):
-        data[i][1]['clean_title'] = data[i][1]['title'].apply(normalize_title)
+    name1, df1 = data[0]
+    name2, df2 = data[1]
     
-    # 2. 从第一个歌单开始，逐个取交集
-    result_df = data[0][1]
-    names = [data[0][0]]
+    # 1. 清洗歌名
+    df1['clean_title'] = df1['title'].apply(normalize_title)
+    df2['clean_title'] = df2['title'].apply(normalize_title)
     
-    for i in range(1, len(data)):
-        names.append(data[i][0])
-        result_df = pd.merge(result_df, data[i][1], on='clean_title', how='inner', suffixes=('', f'_{i}'))
+    # 2. 找出交集 (只获取两个歌单都有的 clean_title 列表)
+    # intersection 是一个集合，比如 {'hello', '晴天'}
+    common_clean_titles = set(df1['clean_title']).intersection(set(df2['clean_title']))
     
-    print(f"\n[结果] 共有 {len(result_df)} 首相似歌曲。")
+    if not common_clean_titles:
+        print("\n[结果] 没有发现相似歌曲。")
+        input("\n按回车键返回...")
+        return
+
+    # 3. 筛选数据 (只保留在交集里的歌)
+    #isin() 函数判断是否在交集列表中
+    result_df1 = df1[df1['clean_title'].isin(common_clean_titles)].copy()
+    result_df2 = df2[df2['clean_title'].isin(common_clean_titles)].copy()
     
-    if not result_df.empty:
-        # 整理输出列：保留各歌单的原始标题和歌手供核对
-        out_cols = ['clean_title']
-        for i in range(len(data)):
-            if i == 0:
-                out_cols.extend(['title', 'artist', 'album'])
-            else:
-                out_cols.extend([f'title_{i}', f'artist_{i}', f'album_{i}'])
-        
-        # 只保留存在的列
-        out_cols = [col for col in out_cols if col in result_df.columns]
-        out_df = result_df[out_cols]
-        
-        name_parts = [n.replace("playlist_", "").replace(".csv", "") for n in names]
-        out_name = f"交集_模糊_{'_x_'.join(name_parts)}.csv"
-        
-        out_df.to_csv(out_name, index=False, encoding='utf_8_sig')
-        print(f"已保存文件: {out_name}")
-        print("提示: 请打开 CSV 核对各歌单的 artist 列以排除同名不同曲。")
+    # 4. 标记来源 (这样你才知道这行是 A 的还是 B 的)
+    # 去掉文件名里的 .csv 后缀，让来源名字好看点
+    source_name1 = name1.replace("playlist_", "").replace(".csv", "")
+    source_name2 = name2.replace("playlist_", "").replace(".csv", "")
+    
+    result_df1['source'] = f"[A] {source_name1}"
+    result_df2['source'] = f"[B] {source_name2}"
+    
+    # 5. 上下合并 (Concat)
+    final_df = pd.concat([result_df1, result_df2])
+    
+    # 6. 【关键一步】排序
+    # 先按 'clean_title' 排序，这样同名的歌就会聚在一起
+    # 再按 'source' 排序，保证 A 歌单总是在 B 歌单上面
+    final_df = final_df.sort_values(by=['clean_title', 'source'])
+    
+    # 7. 整理列顺序 (把 'clean_title' 放在第一列作为索引)
+    cols = ['clean_title', 'source', 'title', 'artist', 'album', 'duration']
+    final_df = final_df[cols]
+    
+    # 8. 保存
+    count = len(common_clean_titles)
+    print(f"\n[结果] 发现 {count} 组相似歌曲。")
+    
+    out_name = f"交集_对照视图_{source_name1}_x_{source_name2}.csv"
+    final_df.to_csv(out_name, index=False, encoding='utf_8_sig')
+    
+    print(f"已保存文件: {out_name}")
+    print("提示: 打开 Excel 后，第一列相同的行即为同一组匹配。")
         
     input("\n按回车键返回...")
-
+    
 def module_difference():
     print("\n>>> 功能: 差集/补集 (A中有但B中没有)")
     print("说明: 找出第一个歌单中有，但其他歌单中都没有的歌曲。")
@@ -377,29 +394,46 @@ def module_union():
     input("\n按回车键返回...")
 
 def module_internal_check():
-    print("\n>>> 功能: 单歌单查重")
-    print("说明: 在一个歌单内查找歌名（清洗后）重复的歌曲。")
+    print("\n>>> 功能: 单歌单查重 (分组对照版)")
+    print("说明: 找出歌单内“核心歌名”相同的歌曲，并聚类展示，方便你决定删哪首。")
     
     data = select_files(min_count=1, max_count=1)
     if not data: return input("按回车返回...")
     
     name, df = data[0]
     
-    # 清洗
+    # 1. 计算清洗后的歌名 (作为查重依据)
     df['clean_title'] = df['title'].apply(normalize_title)
     
-    # 查找重复 keep=False 表示标记所有重复项
-    dupes = df[df.duplicated(subset=['clean_title'], keep=False)]
+    # 2. 查找重复
+    # keep=False 的意思是：所有重复的行都标记为 True (而不是保留第一个)
+    # 比如有3首《晴天》，这3首都会被选出来
+    dupes = df[df.duplicated(subset=['clean_title'], keep=False)].copy()
     
     if dupes.empty:
-        print("\n[结果] 没有发现重复歌曲。")
+        print("\n[结果] 恭喜！该歌单非常干净，没有发现重复歌曲。")
     else:
-        print(f"\n[结果] 发现 {len(dupes)} 条重复/相似记录。")
-        dupes = dupes.sort_values(by='clean_title')
+        # 3. 【关键】排序
+        # 按照 clean_title 排序，这样相同的歌就会在 Excel 里紧挨着显示
+        dupes = dupes.sort_values(by=['clean_title', 'artist'])
         
-        out_name = f"查重结果_{name}"
+        # 4. 整理列顺序
+        # 把 clean_title 放在第一列，作为“组名”
+        cols = ['clean_title', 'title', 'artist', 'album', 'duration', 'id']
+        dupes = dupes[cols]
+        
+        count = len(dupes)
+        unique_groups = dupes['clean_title'].nunique()
+        print(f"\n[结果] 发现 {unique_groups} 组疑似重复歌曲，共 {count} 条记录。")
+        
+        # 5. 保存
+        # 文件名处理一下
+        simple_name = name.replace("playlist_", "").replace(".csv", "")
+        out_name = f"查重_分组视图_{simple_name}.csv"
+        
         dupes.to_csv(out_name, index=False, encoding='utf_8_sig')
-        print(f"详细列表已保存至: {out_name}")
+        print(f"已保存文件: {out_name}")
+        print("提示: 打开 Excel 后，第一列相同的行即为同一组，可直接对比删除。")
         
     input("\n按回车键返回...")
 
